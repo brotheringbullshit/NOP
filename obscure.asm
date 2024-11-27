@@ -1,4 +1,4 @@
-; Virus.MSX.obsure
+; Virus.MSX.obscure
 ; compile with PASMO or any Z80 assembler that supports MSX
 
         ORG    $100H         ; Start of the COM file (bootloader)
